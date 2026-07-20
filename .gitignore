@@ -187,3 +187,6 @@ wandb
 # AI agent generated symlinks
 /.agents/skills
 /.claude/skills
+
+# outputs
+/outputs
