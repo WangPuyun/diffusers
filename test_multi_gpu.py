@@ -112,7 +112,7 @@ def run_worker(rank, world_size, txt_files, model_path, lora_path):
                 prompt=prompt,
                 height=height,
                 width=width,
-                image=[input_image, mask_image],
+                image=[input_image],
                 num_inference_steps=NUM_INFERENCE_STEPS,
                 guidance_scale=GUIDANCE_SCALE,
             ).images[0]

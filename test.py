@@ -75,7 +75,7 @@ for txt_path in txt_files:
         prompt=prompt,
         height=height,
         width=width,
-        image=[input_image, mask_image],
+        image=[input_image],
         num_inference_steps=50,
         guidance_scale=4.0,
     ).images[0]
