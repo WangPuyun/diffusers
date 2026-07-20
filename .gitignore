@@ -147,6 +147,7 @@ runs
 
 # data
 /data
+/datasets/
 serialization_dir
 
 # emacs
