@@ -33,6 +33,15 @@ PY2
 mkdir -p "${LOG_DIR}" "${TRAIN_OUTPUT_DIR}"; cd "${REPO_DIR}"
 TRAIN_COMMAND=(
   accelerate launch
+)
+if [[ "${DEBUGPY:-0}" == "1" ]]; then
+  TRAIN_COMMAND+=(
+    -m debugpy
+    --listen 127.0.0.1:5678
+    --wait-for-client
+  )
+fi
+TRAIN_COMMAND+=(
   examples/dreambooth/train_dreambooth_lora_flux2_klein_img2img.py
   --pretrained_model_name_or_path="${MODEL_DIR}"
   --dataset_name="${DATASET_DIR}"
@@ -43,7 +52,7 @@ TRAIN_COMMAND=(
   --aspect_ratio_buckets="${ASPECT_RATIO_BUCKETS}"
   --train_batch_size="${TRAIN_BATCH_SIZE}"
   --gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}"
-  --max_train_steps=500
+  --max_train_steps=1500
   --rank=16
   --lora_alpha=16
   --learning_rate=1e-4
