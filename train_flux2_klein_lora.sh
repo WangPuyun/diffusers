@@ -67,7 +67,7 @@ TRAIN_COMMAND+=(
   --offload
   --allow_tf32
   --checkpointing_steps=100
-  --checkpoints_total_limit=3
+  --checkpoints_total_limit=30
   --report_to=tensorboard
   --seed=42
 )
