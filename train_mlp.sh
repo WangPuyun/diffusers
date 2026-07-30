@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FLUX.2 Klein LoRA 训练统一入口；修改下面配置即可切换版本、模型和 GPU。
 set -euo pipefail
-RUN_VERSION="v1"
+RUN_VERSION="mlp-debug"
 MODEL_SIZE="4b"
 GPU_IDS="0"
 GLOBAL_BATCH_SIZE=2
@@ -42,7 +42,7 @@ if [[ "${DEBUGPY:-0}" == "1" ]]; then
   )
 fi
 TRAIN_COMMAND+=(
-  examples/dreambooth/train_dreambooth_lora_flux2_klein_img2img.py
+  examples/dreambooth/train_dreambooth_MLP.py
   --pretrained_model_name_or_path="${MODEL_DIR}"
   --dataset_name="${DATASET_DIR}"
   --image_column=image

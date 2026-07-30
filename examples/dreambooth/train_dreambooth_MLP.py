@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 from MLP_Network import MLP
 from diffusers.models.embeddings import get_timestep_embedding
+from kornia.color import rgb_to_lab
 
 import numpy as np
 import torch
@@ -1758,10 +1759,22 @@ def main(args):
                 time_emb = time_emb[:, :, None, None]
                 time_emb = time_emb.expand(-1, -1, model_pred.shape[2], model_pred.shape[3])
 
-                mlp_input = torch.cat([model_pred, time_emb], dim=1)  # [B, 384, H, W]
+                mlp_input = torch.cat([model_pred.detach(), time_emb], dim=1)  # [B, 384, H, W]
                 mlp_input = mlp_input.permute(0, 2, 3, 1)             # [B, H, W, 384]
 
-                mlp_output = mlp(mlp_input)                           # [B, 3, 16H, 16W]
+                mlp_output = mlp(mlp_input)                           # [B, 3, 16H, 16W] 
+                target_rgb = (batch["pixel_values"].float() + 1.0) / 2.0
+                target_rgb = target_rgb.clamp(0, 1)
+
+                target_lab = rgb_to_lab(target_rgb)
+                target_lab = torch.stack(
+                    [
+                        target_lab[:, 0] / 50.0 - 1.0,
+                        target_lab[:, 1] / 128.0,
+                        target_lab[:, 2] / 128.0,
+                    ],
+                    dim=1,
+                )
 
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
@@ -1771,11 +1784,14 @@ def main(args):
                 target = noise - model_input
 
                 # Compute regular loss.
-                loss = torch.mean(
+                lab_loss = torch.mean((mlp_output.float() - target_lab.float()) ** 2)
+                flow_loss = torch.mean(
                     (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
                     1,
                 )
-                loss = loss.mean()
+                flow_loss = flow_loss.mean()
+
+                loss = flow_loss + lab_loss
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -1817,7 +1833,12 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {
+                "loss": loss.detach().item(),
+                "flow_loss": flow_loss.detach().item(),
+                "lab_loss": lab_loss.detach().item(),
+                "lr": lr_scheduler.get_last_lr()[0]
+            }
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
