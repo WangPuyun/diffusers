@@ -8,7 +8,7 @@ GLOBAL_BATCH_SIZE=2
 TRAIN_BATCH_SIZE=1
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_DIR="/root/autodl-tmp/models/flux-klein-base-${MODEL_SIZE}"
-DATASET_DIR="${REPO_DIR}/datasets/train_target"
+DATASET_DIR="${REPO_DIR}/datasets/val_target"
 TRAIN_OUTPUT_DIR="${REPO_DIR}/outputs/${RUN_VERSION}"
 LOG_DIR="${REPO_DIR}/outputs/logs"
 LOG_FILE="${LOG_DIR}/flux2-klein-${MODEL_SIZE}-${RUN_VERSION}-$(date -u +%Y%m%dT%H%M%SZ).log"
@@ -16,7 +16,7 @@ IFS=',' read -ra GPU_ARRAY <<< "${GPU_IDS}"
 GPU_COUNT="${#GPU_ARRAY[@]}"
 if (( GLOBAL_BATCH_SIZE % (TRAIN_BATCH_SIZE * GPU_COUNT) != 0 )); then echo "GLOBAL_BATCH_SIZE 必须能被 TRAIN_BATCH_SIZE × GPU 数量整除" >&2; exit 1; fi
 GRADIENT_ACCUMULATION_STEPS=$((GLOBAL_BATCH_SIZE / (TRAIN_BATCH_SIZE * GPU_COUNT)))
-ASPECT_RATIO_BUCKETS="$(DATASET_DIR="${REPO_DIR}/datasets/train_control1" python - <<'PY2'
+ASPECT_RATIO_BUCKETS="$(DATASET_DIR="${REPO_DIR}/datasets/val_control1" python - <<'PY2'
 from pathlib import Path
 from PIL import Image
 import os

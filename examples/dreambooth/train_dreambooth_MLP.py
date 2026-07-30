@@ -45,6 +45,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 from MLP_Network import MLP
+from diffusers.models.embeddings import get_timestep_embedding
 
 import numpy as np
 import torch
@@ -1152,7 +1153,8 @@ def main(args):
         torch_dtype=weight_dtype,
     )
     # 添加MLP模型
-    MLP = MLP()
+    time_embed_dim = 256
+    mlp = MLP(in_dim=128 + time_embed_dim)
     if args.bnb_quantization_config_path is not None:
         transformer = prepare_model_for_kbit_training(transformer, use_gradient_checkpointing=False)
 
@@ -1241,23 +1243,34 @@ def main(args):
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
         transformer_cls = type(unwrap_model(transformer))
+        mlp_cls = type(unwrap_model(mlp))
+        transformer_index = None
+        mlp_index = None
 
         # 1) Validate and pick the transformer model
         modules_to_save: dict[str, Any] = {}
         transformer_model = None
+        mlp_model = None
 
-        for model in models:
+        for index, model in enumerate(models):
             if isinstance(unwrap_model(model), transformer_cls):
                 transformer_model = model
+                transformer_index = index
                 modules_to_save["transformer"] = model
+            elif isinstance(unwrap_model(model), mlp_cls):
+                mlp_model = model
+                mlp_index = index
             else:
                 raise ValueError(f"unexpected save model: {model.__class__}")
 
         if transformer_model is None:
             raise ValueError("No transformer model found in 'models'")
+        if mlp_model is None:
+            raise ValueError("No MLP model found in 'models'")
 
         # 2) Optionally gather FSDP state dict once
-        state_dict = accelerator.get_state_dict(model) if is_fsdp else None
+        state_dict = accelerator.get_state_dict(transformer_model) if is_fsdp else None
+        mlp_state_dict = accelerator.get_state_dict(mlp_model)
 
         # 3) Only main process materializes the LoRA state dict
         transformer_lora_layers_to_save = None
@@ -1274,18 +1287,21 @@ def main(args):
             if is_fsdp:
                 transformer_lora_layers_to_save = _to_cpu_contiguous(transformer_lora_layers_to_save)
 
-            # make sure to pop weight so that corresponding model is not saved again
-            if weights:
-                weights.pop()
-
             Flux2KleinPipeline.save_lora_weights(
                 output_dir,
                 transformer_lora_layers=transformer_lora_layers_to_save,
                 **_collate_lora_metadata(modules_to_save),
             )
+            mlp_state_dict = {key: value.detach().cpu() for key, value in mlp_state_dict.items()}
+            torch.save(mlp_state_dict, os.path.join(output_dir, "mlp.pt"))
+        # make sure to pop weight so that corresponding model is not saved again
+        if weights:
+            for index in sorted((transformer_index, mlp_index), reverse=True):
+                weights.pop(index)
 
     def load_model_hook(models, input_dir):
         transformer_ = None
+        mlp_ = None
 
         if not is_fsdp:
             while len(models) > 0:
@@ -1293,8 +1309,10 @@ def main(args):
 
                 if isinstance(unwrap_model(model), type(unwrap_model(transformer))):
                     transformer_ = unwrap_model(model)
+                elif isinstance(unwrap_model(model), type(unwrap_model(mlp))):
+                    mlp_ = unwrap_model(model)
                 else:
-                    raise ValueError(f"unexpected save model: {model.__class__}")
+                    raise ValueError(f"unexpected load model: {model.__class__}")
         else:
             transformer_ = Flux2Transformer2DModel.from_pretrained(
                 args.pretrained_model_name_or_path,
@@ -1318,6 +1336,9 @@ def main(args):
                     f" {unexpected_keys}. "
                 )
 
+        if not is_fsdp:
+            mlp_state_dict = torch.load(os.path.join(input_dir, "mlp.pt"), map_location="cpu", weights_only=True,)
+            mlp_.load_state_dict(mlp_state_dict)
         # Make sure the trainable params are in float32. This is again needed since the base models
         # are in `weight_dtype`. More details:
         # https://github.com/huggingface/diffusers/pull/6514#discussion_r1449796804
@@ -1349,7 +1370,8 @@ def main(args):
 
     # Optimization parameters
     transformer_parameters_with_lr = {"params": transformer_lora_parameters, "lr": args.learning_rate}
-    params_to_optimize = [transformer_parameters_with_lr]
+    mlp_parameters = list(mlp.parameters())
+    params_to_optimize = [transformer_parameters_with_lr, {"params": mlp_parameters, "lr": args.learning_rate,},]
 
     # Optimizer creation
     if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
@@ -1548,8 +1570,8 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        transformer, optimizer, train_dataloader, lr_scheduler
+    transformer, mlp, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        transformer, mlp, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1634,9 +1656,10 @@ def main(args):
 
     for epoch in range(first_epoch, args.num_train_epochs):
         transformer.train()
+        mlp.train()
 
         for step, batch in enumerate(train_dataloader):
-            models_to_accumulate = [transformer]
+            models_to_accumulate = [transformer, mlp]
             prompts = batch["prompts"]
 
             with accelerator.accumulate(models_to_accumulate):
@@ -1729,6 +1752,17 @@ def main(args):
 
                 model_pred = Flux2KleinPipeline._unpack_latents_with_ids(model_pred, model_input_ids)
 
+                # model_pred: [B, 128, H, W]
+                time_emb = get_timestep_embedding(timesteps, embedding_dim=time_embed_dim,).to(model_pred.dtype) # [B, 256]
+
+                time_emb = time_emb[:, :, None, None]
+                time_emb = time_emb.expand(-1, -1, model_pred.shape[2], model_pred.shape[3])
+
+                mlp_input = torch.cat([model_pred, time_emb], dim=1)  # [B, 384, H, W]
+                mlp_input = mlp_input.permute(0, 2, 3, 1)             # [B, H, W, 384]
+
+                mlp_output = mlp(mlp_input)                           # [B, 3, 16H, 16W]
+
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
                 weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
@@ -1745,7 +1779,7 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = transformer.parameters()
+                    params_to_clip = list(transformer.parameters()) + list(mlp.parameters())
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
