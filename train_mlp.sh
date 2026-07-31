@@ -4,7 +4,7 @@ set -euo pipefail
 RUN_VERSION="mlp-debug"
 MODEL_SIZE="4b"
 GPU_IDS="0"
-GLOBAL_BATCH_SIZE=2
+GLOBAL_BATCH_SIZE=4
 TRAIN_BATCH_SIZE=1
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_DIR="/root/autodl-tmp/models/flux-klein-base-${MODEL_SIZE}"
@@ -52,7 +52,7 @@ TRAIN_COMMAND+=(
   --aspect_ratio_buckets="${ASPECT_RATIO_BUCKETS}"
   --train_batch_size="${TRAIN_BATCH_SIZE}"
   --gradient_accumulation_steps="${GRADIENT_ACCUMULATION_STEPS}"
-  --max_train_steps=1500
+  --max_train_steps=3000
   --rank=128
   --lora_alpha=128
   --learning_rate=1e-4
@@ -74,4 +74,4 @@ TRAIN_COMMAND+=(
 if (( GPU_COUNT > 1 )); then TRAIN_COMMAND+=(--multi_gpu "--num_processes=${GPU_COUNT}"); fi
 echo "GPU=${GPU_IDS}, buckets=${ASPECT_RATIO_BUCKETS}, grad_accum=${GRADIENT_ACCUMULATION_STEPS}"
 echo "DDP 每张 GPU 保存完整模型，不会合并显存。"
-CUDA_VISIBLE_DEVICES="${GPU_IDS}" "${TRAIN_COMMAND[@]}" 2>&1 | tee "${LOG_FILE}"
+CUDA_VISIBLE_DEVICES="${GPU_IDS}" "${TRAIN_COMMAND[@]}" "$@" 2>&1 | tee "${LOG_FILE}"

@@ -1834,6 +1834,7 @@ def main(args):
                         logger.info(f"Saved state to {save_path}")
 
             logs = {
+                "epoch": f"{epoch + 1}/{args.num_train_epochs}",
                 "loss": loss.detach().item(),
                 "flow_loss": flow_loss.detach().item(),
                 "lab_loss": lab_loss.detach().item(),
