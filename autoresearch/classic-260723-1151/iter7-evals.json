@@ -1,0 +1,31 @@
+{
+  "best_so_far": {
+    "arcface": 0.692992103099823,
+    "cosine_weight": 0.0,
+    "face_pair_count": 10,
+    "face_pair_rate": 1.0,
+    "fid": 42.746437072753906,
+    "fingerprint": "1eae355545af2f99a4797ac9542130f7a0f0755494fd1629b50eda19e8e21115",
+    "hf_weight": 0.125,
+    "iteration": 6,
+    "kid_raw": -0.0703423023223877,
+    "label": "hf_only_0.125",
+    "lpips": 0.13190622627735138,
+    "psnr_db": 23.60701560974121,
+    "score_J": 0.1320155079588294,
+    "ssim": 0.8698811709880829,
+    "status": "success"
+  },
+  "checkpoint": "iter7",
+  "completed_iterations": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "count": 8
+}

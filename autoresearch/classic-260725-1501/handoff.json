@@ -1,0 +1,21 @@
+{
+  "best": {
+    "arcface": "0.7995514154434205",
+    "cosine_weight": "0.125",
+    "face_pair_count": "10",
+    "face_pair_rate": "1.0",
+    "fid": "25.544172286987305",
+    "fingerprint": "6dc5c72c2729f9b7ec44c43688302ecdba4c87b77d10fbd1fecfcd034a0fb875",
+    "hf_weight": "0.5",
+    "iteration": "16",
+    "kid_raw": "-0.07275509834289551",
+    "label": "cosine_0.125_hf_0.5",
+    "lpips": "0.10707858204841614",
+    "psnr_db": "26.415644454956055",
+    "score_J": "0.10715447324514389",
+    "ssim": "0.8968837976455688",
+    "status": "success"
+  },
+  "results": "/root/autodl-tmp/diffusers/autoresearch/classic-260725-1501/classic-results.tsv",
+  "status": "complete"
+}

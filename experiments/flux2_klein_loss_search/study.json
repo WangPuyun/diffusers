@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "study_id": "flux2_klein_loss_v1",
+  "repo_root": "../..",
+  "training": {
+    "shell_script": "train_flux2_klein_lora.sh",
+    "model_name": "flux-klein-base-4b",
+    "gpu_ids": "0",
+    "global_batch_size": 2,
+    "train_batch_size": 1,
+    "max_train_steps": 2000,
+    "train_seed": 42,
+    "weighting_scheme": "none",
+    "checkpointing_steps": 1501,
+    "lora_filename": "pytorch_lora_weights.safetensors"
+  },
+  "evaluation": {
+    "script": "test_multi_gpu.py",
+    "model_name": "flux-klein-base-4b",
+    "stems_file": "experiments/flux2_klein_loss_search/eval_stems.txt",
+    "seed": 12345,
+    "num_inference_steps": 50,
+    "guidance_scale": 4.0
+  },
+  "calibration": {
+    "microbatches": 8,
+    "gradient_norm_epsilon": 1e-12,
+    "result_file": "experiments/flux2_klein_loss_search/gradient_calibration.json",
+    "cosine_unit_weight": null,
+    "hf_unit_weight": null,
+    "raw_result": null
+  },
+  "search": {
+    "mse_weight": 1.0,
+    "relative_strengths": [
+      0.0,
+      0.0625,
+      0.125,
+      0.25,
+      0.5,
+      1.0
+    ],
+    "max_total_relative_strength": 1.0
+  },
+  "objective": {
+    "direction": "lower_is_better",
+    "tie_break_weight": 0.001
+  },
+  "output_root": "outputs/autoresearch_loss_search",
+  "study_lock": "experiments/flux2_klein_loss_search/study_lock.json",
+  "input_trees": [
+    {
+      "path": "datasets/train_target",
+      "extensions": [".json", ".jsonl", ".png", ".txt"]
+    },
+    {
+      "path": "datasets/train_control1",
+      "extensions": [".json", ".jsonl", ".png", ".txt"]
+    },
+    {
+      "path": "datasets/test_control1",
+      "extensions": [".png", ".txt"]
+    },
+    {
+      "path": "datasets/test_target",
+      "extensions": [".png"]
+    },
+    {
+      "path": "src/diffusers",
+      "extensions": [".py"]
+    },
+    {
+      "path": "/root/autodl-tmp/models/flux-klein-base-4b",
+      "extensions": []
+    },
+    {
+      "path": "/root/.insightface/models/antelopev2",
+      "extensions": [".onnx"]
+    },
+    {
+      "path": "/root/.cache/torch/hub/checkpoints",
+      "extensions": [".pth"]
+    },
+    {
+      "path": "/root/miniconda3/lib/python3.12/site-packages/lpips/weights/v0.1",
+      "extensions": [".pth"]
+    }
+  ],
+  "protected_files": [
+    "examples/dreambooth/custom_loss_function.py",
+    "examples/dreambooth/train_dreambooth_lora_flux2_klein_img2img.py",
+    "train_flux2_klein_lora.sh",
+    "test_multi_gpu.py",
+    "experiments/flux2_klein_loss_search/calibrate_loss_scales.py",
+    "experiments/flux2_klein_loss_search/run_trial.py",
+    "experiments/flux2_klein_loss_search/guard_trial.py",
+    "experiments/flux2_klein_loss_search/eval_stems.txt"
+  ]
+}

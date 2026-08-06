@@ -51,6 +51,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
+from custom_loss_function import CustomLoss
 from huggingface_hub import create_repo, upload_folder
 from peft import LoraConfig, prepare_model_for_kbit_training, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
@@ -553,6 +554,36 @@ def parse_args(input_args=None):
         help=('We default to the "none" weighting scheme for uniform sampling and uniform loss'),
     )
     parser.add_argument(
+        "--mse_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight of the standard flow-matching MSE loss.",
+    )
+    parser.add_argument(
+        "--cosine_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight of the ModaFlow velocity-field cosine loss.",
+    )
+    parser.add_argument(
+        "--hf_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight of the Haar high-frequency velocity-residual loss.",
+    )
+    parser.add_argument(
+        "--loss_gradient_calibration_steps",
+        type=int,
+        default=0,
+        help="Number of deterministic microbatches used to measure per-term LoRA gradient norms, then exit.",
+    )
+    parser.add_argument(
+        "--loss_gradient_calibration_output",
+        type=str,
+        default=None,
+        help="JSON output path for loss-gradient calibration statistics.",
+    )
+    parser.add_argument(
         "--logit_mean", type=float, default=0.0, help="mean to use when using the `'logit_normal'` weighting scheme."
     )
     parser.add_argument(
@@ -714,6 +745,16 @@ def parse_args(input_args=None):
 
     if args.dataset_name is not None and args.instance_data_dir is not None:
         raise ValueError("Specify only one of `--dataset_name` or `--instance_data_dir`")
+
+    if args.loss_gradient_calibration_steps < 0:
+        raise ValueError("--loss_gradient_calibration_steps must be non-negative")
+    if args.loss_gradient_calibration_steps > 0:
+        if args.loss_gradient_calibration_output is None:
+            raise ValueError("--loss_gradient_calibration_output is required when calibration is enabled")
+        if args.seed is None:
+            raise ValueError("--seed is required when loss-gradient calibration is enabled")
+    elif args.loss_gradient_calibration_output is not None:
+        raise ValueError("--loss_gradient_calibration_steps must be positive when an output path is provided")
 
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -1063,6 +1104,8 @@ def main(args):
         project_config=accelerator_project_config,
         kwargs_handlers=[kwargs],
     )
+    if args.loss_gradient_calibration_steps > 0 and accelerator.num_processes != 1:
+        raise ValueError("Loss-gradient calibration requires exactly one process")
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
@@ -1568,6 +1611,27 @@ def main(args):
         tracker_name = "dreambooth-flux2-image2img-lora"
         accelerator.init_trackers(tracker_name, config=vars(args))
 
+    custom_loss = CustomLoss(
+        mse_weight=args.mse_loss_weight,
+        cosine_weight=args.cosine_loss_weight,
+        hf_weight=args.hf_loss_weight,
+    ).to(accelerator.device)
+    calibration_losses = None
+    calibration_norms = None
+    calibration_samples = None
+    calibration_parameters = None
+    calibration_active_parameter_counts = None
+    gradient_norm_epsilon = 1e-12
+    if args.loss_gradient_calibration_steps > 0:
+        calibration_losses = {
+            "mse": CustomLoss(mse_weight=1.0, cosine_weight=0.0, hf_weight=0.0).to(accelerator.device),
+            "cosine": CustomLoss(mse_weight=0.0, cosine_weight=1.0, hf_weight=0.0).to(accelerator.device),
+            "high_frequency": CustomLoss(mse_weight=0.0, cosine_weight=0.0, hf_weight=1.0).to(accelerator.device),
+        }
+        calibration_norms = {name: [] for name in calibration_losses}
+        calibration_active_parameter_counts = {name: [] for name in calibration_losses}
+        calibration_samples = []
+        calibration_parameters = [parameter for parameter in transformer.parameters() if parameter.requires_grad]
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -1671,6 +1735,9 @@ def main(args):
                 )
                 cond_model_input_ids = cond_model_input_ids.expand(cond_model_input.shape[0], -1, -1)
 
+                if calibration_losses is not None:
+                    torch.manual_seed(args.seed + len(calibration_samples))
+
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(model_input)
                 bsz = model_input.shape[0]
@@ -1686,6 +1753,7 @@ def main(args):
                 )
                 indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
                 timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
+                # timesteps = torch.ones_like(timesteps)
 
                 # Add noise according to flow matching.
                 # zt = (1 - texp) * x + texp * z1
@@ -1730,15 +1798,83 @@ def main(args):
                 # and instead post-weight the loss
                 weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
 
-                # flow matching loss
+                # Ground-truth flow-matching velocity; model_pred has the same [B, C, H, W] layout.
                 target = noise - model_input
 
-                # Compute regular loss.
-                loss = torch.mean(
-                    (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
-                    1,
-                )
-                loss = loss.mean()
+                if calibration_losses is not None:
+                    term_losses = [
+                        (
+                            name,
+                            criterion(model_pred=model_pred, target=target, weighting=weighting),
+                        )
+                        for name, criterion in calibration_losses.items()
+                    ]
+                    for term_index, (name, term_loss) in enumerate(term_losses):
+                        gradients = torch.autograd.grad(
+                            term_loss,
+                            calibration_parameters,
+                            retain_graph=term_index < len(term_losses) - 1,
+                            allow_unused=True,
+                        )
+                        active_gradients = [gradient for gradient in gradients if gradient is not None]
+                        if not active_gradients:
+                            raise RuntimeError(f"The {name} loss is disconnected from all trainable LoRA parameters")
+                        squared_norm = sum(gradient.detach().float().square().sum() for gradient in active_gradients)
+                        calibration_norms[name].append(torch.sqrt(squared_norm).item())
+                        calibration_active_parameter_counts[name].append(len(active_gradients))
+
+                    calibration_samples.append(
+                        {
+                            "latent_shape": list(model_input.shape),
+                            "timesteps": [int(timestep) for timestep in timesteps.detach().cpu().tolist()],
+                        }
+                    )
+                    if len(calibration_samples) == args.loss_gradient_calibration_steps:
+                        medians = {name: float(np.median(values)) for name, values in calibration_norms.items()}
+                        if any(not math.isfinite(value) or value <= 0.0 for value in medians.values()):
+                            raise ValueError(f"Invalid loss-gradient calibration medians: {medians}")
+
+                        calibration_result = {
+                            "schema_version": 1,
+                            "microbatches": args.loss_gradient_calibration_steps,
+                            "seed": args.seed,
+                            "weighting_scheme": args.weighting_scheme,
+                            "gradient_norm_epsilon": gradient_norm_epsilon,
+                            "gradient_norms": calibration_norms,
+                            "gradient_norm_medians": medians,
+                            "active_parameter_tensor_counts": calibration_active_parameter_counts,
+                            "cosine_unit_weight": medians["mse"] / (medians["cosine"] + gradient_norm_epsilon),
+                            "hf_unit_weight": medians["mse"] / (medians["high_frequency"] + gradient_norm_epsilon),
+                            "configuration": {
+                                "pretrained_model_name_or_path": args.pretrained_model_name_or_path,
+                                "dataset_name": args.dataset_name,
+                                "rank": args.rank,
+                                "lora_alpha": args.lora_alpha,
+                                "lora_layers": args.lora_layers,
+                                "train_batch_size": args.train_batch_size,
+                                "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                                "mixed_precision": args.mixed_precision,
+                                "do_fp8_training": args.do_fp8_training,
+                                "aspect_ratio_buckets": args.aspect_ratio_buckets,
+                            },
+                            "samples": calibration_samples,
+                        }
+                        if accelerator.is_main_process:
+                            output_path = Path(args.loss_gradient_calibration_output)
+                            output_path.parent.mkdir(parents=True, exist_ok=True)
+                            temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+                            temporary_path.write_text(
+                                json.dumps(calibration_result, indent=2, sort_keys=True) + "\n",
+                                encoding="utf-8",
+                            )
+                            temporary_path.replace(output_path)
+                            logger.info(f"Wrote loss-gradient calibration to {output_path}")
+                        accelerator.end_training()
+                        return
+                    continue
+
+                # Compute the FM-MSE, velocity cosine, and high-frequency residual terms.
+                loss = custom_loss(model_pred=model_pred, target=target, weighting=weighting)
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -1780,7 +1916,15 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {
+                "loss": loss.detach().item(),
+                "loss_mse": custom_loss.last_terms["mse"].item(),
+                "loss_cosine": custom_loss.last_terms["cosine"].item(),
+                "loss_hf": custom_loss.last_terms["high_frequency"].item(),
+                "lr": lr_scheduler.get_last_lr()[0],
+                "epoch": epoch,
+                "timesteps": timesteps.detach().float().mean().item(),
+            }
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
@@ -1810,6 +1954,12 @@ def main(args):
 
                 del pipeline
                 free_memory()
+
+    if calibration_losses is not None:
+        raise RuntimeError(
+            f"Loss-gradient calibration collected {len(calibration_samples)} of "
+            f"{args.loss_gradient_calibration_steps} requested microbatches"
+        )
 
     # Save the lora layers
     accelerator.wait_for_everyone()

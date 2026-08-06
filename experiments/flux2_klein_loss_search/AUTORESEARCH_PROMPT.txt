@@ -1,0 +1,8 @@
+$autoresearch --classic --evals --evals-interval 8
+Goal: 在固定的 Flux.2 Klein 4B LoRA 训练与评估协议下，搜索 FM-MSE、ModaFlow cosine 和高频速度残差三项损失的最佳权重。只允许修改 experiments/flux2_klein_loss_search/candidate.json；mse_weight 必须始终为 1.0，cosine_weight 与 hf_weight 是直接传给训练脚本的原始权重，不需要执行梯度标定。Iteration 0 使用当前的纯 MSE 基线：cosine_weight=0、hf_weight=0。Iteration 1–4 依次测试 cosine-only 权重 0.0625、0.125、0.25、0.5，hf_weight 保持 0；Iteration 5–8 依次测试 HF-only 权重 0.0625、0.125、0.25、0.5，cosine_weight 保持 0；Iteration 9–24 按 cosine 外层、HF 内层的顺序完成 {0.0625,0.125,0.25,0.5}×{0.0625,0.125,0.25,0.5} 的 4×4 笛卡尔积；Iteration 25 比较最佳 cosine-only 与最佳 HF-only，将表现更好的单项权重设为 1.0，另一项保持 0，完全相同时选择 cosine-only。每轮都必须从同一基础模型重新训练 2000 optimizer steps，再对固定 10 个样本执行 50-step 推理。不得修改训练代码、评估代码、study.json、样本清单、随机种子、训练步数、推理步数、guidance 或评分公式；不得 warm-start；不得跳过预注册候选。候选即使被 discard，也必须继续执行下一个预注册配置。FID、KID、PSNR 只记录，不参与自动排名。
+Scope: experiments/flux2_klein_loss_search/candidate.json
+Metric: LPIPS-dominant score J = LPIPS + 0.001 * 0.5 * (((1 - clamp(ArcFace,-1,1)) / 2) + ((1 - clamp(SSIM,-1,1)) / 2))
+Direction: lower_is_better
+Verify: python experiments/flux2_klein_loss_search/run_trial.py --study experiments/flux2_klein_loss_search/study.json --candidate experiments/flux2_klein_loss_search/candidate.json
+Guard: python experiments/flux2_klein_loss_search/guard_trial.py --study experiments/flux2_klein_loss_search/study.json --candidate experiments/flux2_klein_loss_search/candidate.json --result outputs/autoresearch_loss_search/latest_result.json
+Iterations: 25

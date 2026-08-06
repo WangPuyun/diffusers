@@ -13,7 +13,7 @@ from insightface.app import FaceAnalysis
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model_path", type=str, default="/root/autodl-tmp/models/flux-klein-base-4b")
-parser.add_argument("--lora_path", type=str, default="/root/autodl-tmp/diffusers/output/Flux2_klein_base_4b_v1/Flux2_klein_base_4b_v1_000001500.safetensors")
+parser.add_argument("--lora_path", type=str, default="/root/autodl-tmp/diffusers/outputs/v1/checkpoint-200/pytorch_lora_weights.safetensors")
 args = parser.parse_args()
 
 def image_to_tensor(image):
